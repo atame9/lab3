@@ -43,6 +43,7 @@ class TwoPCNode:
         if self.node_id == COORDINATOR_ID:
             self.transaction_id_counter = 0
             # In-memory log of final decisions for recovery purposes
+            self.decision_log_file = "coordinator_log.json"
             self.transaction_decisions = {} # {tx_id: 'GLOBAL-COMMIT' | 'GLOBAL-ABORT'}
 
         # Load any previously saved state from disk
@@ -76,6 +77,18 @@ class TwoPCNode:
                     self.current_tx = None
                     self._clear_tx_state() # Clear corrupted file
 
+        if self.node_id == COORDINATOR_ID:
+            # On startup, load the log of previous transaction decisions. This
+            # is critical for allowing the coordinator to answer recovery
+            # requests from participants after a crash.
+            if os.path.exists(self.decision_log_file):
+                try:
+                    with open(self.decision_log_file, 'r') as f:
+                        self.transaction_decisions = {int(k): v for k, v in json.load(f).items()}
+                    print(f"  [COORDINATOR] Recovered {len(self.transaction_decisions)} transaction decisions from log.")
+                except (IOError, json.JSONDecodeError) as e:
+                    print(f"[ERROR] Could not load coordinator decision log from {self.decision_log_file}: {e}")
+
     def _load_balance_from_file(self):
         """Load account balance from this node's file."""
         if self.node_id not in PARTICIPANT_IDS:
@@ -101,6 +114,15 @@ class TwoPCNode:
                 json.dump(self.current_tx, f)
         except Exception as e:
             print(f"[ERROR] Failed to persist transaction state: {e}")
+
+    def _persist_coordinator_decisions(self):
+        """Persist the coordinator's decision log to disk."""
+        if self.node_id != COORDINATOR_ID: return
+        try:
+            with open(self.decision_log_file, 'w') as f:
+                json.dump(self.transaction_decisions, f)
+        except Exception as e:
+            print(f"[ERROR] Failed to persist coordinator decisions: {e}")
 
     def _clear_tx_state(self):
         """Clear the transaction state from memory and disk."""
@@ -216,6 +238,7 @@ class TwoPCNode:
 
         # Log the final decision for recovery purposes
         self.transaction_decisions[tx_id] = decision
+        self._persist_coordinator_decisions()
 
         # Broadcast the final decision to all participants
         self._broadcast_rpc('rpc_decision', tx_id, decision, transaction_details)
