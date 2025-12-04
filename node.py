@@ -130,6 +130,16 @@ class TwoPCNode:
         if self.node_id in PARTICIPANT_IDS and os.path.exists(self.tx_state_file):
             os.remove(self.tx_state_file)
 
+    def _persist_balance(self):
+        """Internal helper to write the current in-memory balance to disk."""
+        if self.node_id not in PARTICIPANT_IDS: return
+        try:
+            with open(self.account_file, 'w') as f:
+                f.write(str(self.balance))
+            print(f"  [PARTICIPANT {self.node_id}] New balance of {self.balance} persisted to disk.")
+        except Exception as e:
+            print(f"[ERROR] Failed to persist balance: {e}")
+
 
 
     # ========================================================================
@@ -320,8 +330,8 @@ class TwoPCNode:
                     bonus = 0.2 * transaction_details['initial_A']
                     self.balance += bonus
                     print(f"  [PARTICIPANT {self.node_id}] Applied T2 (Bonus {bonus}). New Balance: {self.balance}")
-                # Write the new balance to the file and clean up state
-                self.rpc_set_balance(self.balance)
+                # Persist the new balance to the file and clean up state
+                self._persist_balance()
                 self._clear_tx_state()
             else: # GLOBAL-ABORT or inconsistent state
                 print(f"  [PARTICIPANT {self.node_id}] Aborting transaction.")
@@ -370,14 +380,10 @@ class TwoPCNode:
         if self.node_id not in PARTICIPANT_IDS:
             return {"status": "error", "message": "I do not have an account."}
         with self.lock:
-            try:
-                with open(self.account_file, 'w') as f:
-                    f.write(str(float(value)))
-                self.balance = float(value)
-                print(f"  [PARTICIPANT {self.node_id}] Set balance to {value}")
-                return {"status": "success"}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
+            self.balance = float(value)
+            self._persist_balance() # Use the internal helper to write to disk
+            print(f"  [PARTICIPANT {self.node_id}] Manually set balance to: {value}")
+            return {"status": "success"}
 
     def rpc_get_transaction_decision(self, tx_id):
         """Coordinator RPC for participants to query a transaction's final decision."""
