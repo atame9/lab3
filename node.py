@@ -29,7 +29,7 @@ class TwoPCNode:
         self.peers = {}  # Dictionary of connected peer nodes {peer_id: RPCProxy}
         
         # Thread-safe lock for protecting shared state from race conditions
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
         # Participant-specific state
         if self.node_id in PARTICIPANT_IDS:
