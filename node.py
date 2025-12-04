@@ -172,19 +172,37 @@ class TwoPCNode:
         print(f"--- Node {self.node_id}: All peers connected! ---\n")
 
     def _broadcast_rpc(self, method_name, *args):
-        """Broadcast RPC call to all PARTICIPANT peers."""
-        responses = {}
+        """Broadcast RPC call to all PARTICIPANT peers in parallel with a timeout."""
+        responses = {pid: None for pid in PARTICIPANT_IDS}
+        threads = []
+        RPC_TIMEOUT = 5.0  # Seconds to wait for an RPC response
 
-        # Call the method on all remote participant nodes (not the coordinator)
+        def rpc_worker(peer_id, proxy):
+            """Worker function to make a single RPC call."""
+            try:
+                # Make the actual RPC call
+                response = getattr(proxy, method_name)(*args)
+                responses[peer_id] = response
+            except Exception as e:
+                # This will catch explicit connection errors, but not hangs.
+                # The timeout is handled by the join() call below.
+                print(f"[ERROR] RPC {method_name} to {peer_id} failed with exception: {e}")
+                responses[peer_id] = None
+
+        # Create and start a thread for each participant RPC call
         for peer_id in PARTICIPANT_IDS:
             if peer_id in self.peers:
-                try:
-                    proxy = self.peers[peer_id]
-                    responses[peer_id] = getattr(proxy, method_name)(*args)
-                except Exception as e:
-                    # Log error and mark response as failed
-                    print(f"[ERROR] RPC {method_name} to {peer_id} failed: {e}")
-                    responses[peer_id] = None
+                proxy = self.peers[peer_id]
+                thread = threading.Thread(target=rpc_worker, args=(peer_id, proxy))
+                threads.append(thread)
+                thread.start()
+
+        # Wait for all threads to complete, with a timeout
+        for t in threads:
+            t.join(timeout=RPC_TIMEOUT)
+
+        # The responses dictionary will contain results from successful calls
+        # and None for failed or timed-out calls.
 
         return responses
 
