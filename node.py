@@ -315,9 +315,11 @@ class TwoPCNode:
                 if self.current_tx['type'] == 'T1':
                     if self.node_id == 2: self.balance -= 100
                     if self.node_id == 3: self.balance += 100
+                    print(f"  [PARTICIPANT {self.node_id}] Applied T1. New Balance: {self.balance}")
                 elif self.current_tx['type'] == 'T2':
                     bonus = 0.2 * transaction_details['initial_A']
                     self.balance += bonus
+                    print(f"  [PARTICIPANT {self.node_id}] Applied T2 (Bonus {bonus}). New Balance: {self.balance}")
                 # Write the new balance to the file and clean up state
                 self.rpc_set_balance(self.balance)
                 self._clear_tx_state()
