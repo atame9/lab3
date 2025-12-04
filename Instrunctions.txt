@@ -1,0 +1,49 @@
+
+CISC 5597/6935 Distributed Systems
+Lab 3: 2-Phase Commit Protocol
+Background:
+Two-phase commit (2PC) is a standardized protocol that ensures atomicity, consistency, isolation and
+durability (ACID) of a transaction; it is an atomic commitment protocol for distributed systems.
+Lab Assignment:
+Based on RPCs that you created in Lab-2, we are going to simulate the 2PC protocol with two
+transactions.
+1. Transfer 100 dollars from account A to account B.
+2. Add a 20% bonus to A and add the same amount (0.2 * A) to B.
+Requirements:
+1. There are THREE “computing nodes” in your cluster. They are fully connected through RPC
+calls, meaning that they know each other's IPs and corresponding ports.
+2. Within the 3-node cluster, Node-1 is the coordinator; Node-2 is a participant that manages
+account A; Node-3 is another participant that manages account B.
+3. The account values are stored as a file on the disk.
+4. There is a client that sends the transaction request to the coordinator.
+5. The cluster uses 2PC to ensure consistency.
+The cluster needs to simulate the following items.
+1. Simulate the basic 2PC protocol as discussed. There are 3 scenarios to be simulated.
+a. A has 200 and B has 300 in their accounts initially. Everything works as expected, with
+no failures.
+i. Simulate all scenarios;
+b. A has 90 and B has 50 in their accounts initially. Everything works as expected, with no
+failures.
+i. Simulate all scenarios;
+c. A has 200 and B has 300 in their accounts initially.
+i. Node-2 crashed (e.g., represented by a long sleep time) before responding to the
+coordinator.
+ii. Node-2 crashed (e.g., represented by a long sleep time) after responding to the
+coordinator.
+iii. (6935-only) Node-1 crashed after sending out the request and potential solutions
+to recovery from the crash.
+2. (6935 Required): Each of Node-2 and Node-3 have four replicas (a 5-node system). Therefore,
+the cluster will have 1 coordinator, 5 nodes for account A, and another 5 nodes for account B.
+For accounts A and B, we use Paxos OR Raft to achieve consensus on the values of A and B.
+a. It basically integrates your Lab-2 into this system.
+Grading Rubric: This lab allows a group of 2 students.
+Your code should be elegant and well-documented (with comments).
+1. The submission can not run successfully. (0 points)
+2. A cloud-based video demonstration (10%)
+3. The three computing nodes can communicate with each other through RPCs. (5%)
+4. Requirement 1.a (15%)
+5. Requirement 1.b (20%)
+6. Requirement 1.c.i (20% or 15%)
+7. Requirement 1.c.ii (20% or 15%)
+8. Requirement 1.a.iii (10%)
+9. Report (10%)
