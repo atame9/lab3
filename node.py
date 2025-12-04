@@ -285,8 +285,17 @@ class TwoPCNode:
                     can_commit = True # No constraints on receiving money
 
             elif transaction_type == 'T2':
-                # Both participants must be able to perform the transaction
-                can_commit = True # Assume yes unless there's a reason not to
+                # For T2, we use Optimistic Concurrency Control to ensure Isolation.
+                # Node 2 (Account A) must validate that its balance has not changed
+                # since the coordinator read it at the start of the transaction.
+                if self.node_id == 2:
+                    initial_A = transaction_details.get('initial_A')
+                    if self.balance == initial_A:
+                        can_commit = True
+                    else:
+                        print(f"  [PARTICIPANT {self.node_id}] OPTIMISTIC LOCK FAILED: Balance changed from {initial_A} to {self.balance}. Voting ABORT.")
+                else: # Node 3 has no constraints to validate for T2
+                    can_commit = True
 
             if can_commit:
                 print(f"  [PARTICIPANT {self.node_id}] Constraints met. Voting VOTE-COMMIT.")
