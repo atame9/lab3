@@ -17,6 +17,7 @@ PEERS_CONFIG = {
 AUTHKEY = b'2pc_lab_secret'  # Shared secret for authenticated connections
 COORDINATOR_ID = 1
 PARTICIPANT_IDS = [2, 3]
+RPC_TIMEOUT = 5.0  # Seconds to wait for an RPC response before considering it failed
 
 
 class TwoPCNode:
@@ -38,6 +39,8 @@ class TwoPCNode:
             # State for the current transaction (for recovery)
             self.tx_state_file = f"node_{self.node_id}_tx_state.json"
             self.current_tx = None # e.g., {'id': tx_id, 'state': 'PREPARED'}
+            self.crash_pending = False
+            self.crash_duration = 0
 
         # Coordinator-specific state
         if self.node_id == COORDINATOR_ID:
@@ -95,16 +98,14 @@ class TwoPCNode:
             return  # Only participants have accounts
         try:
             if not os.path.exists(self.account_file):
-                self.rpc_set_balance(0) # Create file with 0 if it doesn't exist
+                # If the account file doesn't exist, create it with a balance of 0.
+                with open(self.account_file, 'w') as f:
+                    f.write('0')
             with open(self.account_file, 'r') as f:
                 self.balance = float(f.read())
         except (IOError, ValueError) as e:
             print(f"[ERROR] Could not load balance from {self.account_file}: {e}. Defaulting to 0.")
             self.balance = 0
-            try:
-                self.rpc_set_balance(0)
-            except Exception as write_e:
-                print(f"[ERROR] Could not create/reset account file {self.account_file}: {write_e}")
 
     def _persist_tx_state(self):
         """Persist the participant's current transaction state to disk (the 'log')."""
@@ -175,7 +176,6 @@ class TwoPCNode:
         """Broadcast RPC call to all PARTICIPANT peers in parallel with a timeout."""
         responses = {pid: None for pid in PARTICIPANT_IDS}
         threads = []
-        RPC_TIMEOUT = 5.0  # Seconds to wait for an RPC response
 
         def rpc_worker(peer_id, proxy):
             """Worker function to make a single RPC call."""
@@ -280,84 +280,94 @@ class TwoPCNode:
 
     def rpc_vote_request(self, tx_id, transaction_type, transaction_details):
         """Participant receives a vote request from the coordinator."""
-        with self.lock:
-            print(f"  [PARTICIPANT {self.node_id}] Received VOTE-REQUEST for TXN-{tx_id}")
+        
+        # --- LOGIC FOR 1c.i (Crash BEFORE voting) ---
+        # We sleep immediately, causing the Coordinator to timeout waiting for us.
+        config = transaction_details.get('scenario_config', {})
+        if (config and config.get('crash_node') == self.node_id and
+                config.get('crash_point') == 'BEFORE_VOTE'):
+            duration = config.get('crash_duration', 10)
+            print(f"  [CRASH SIM] Node {self.node_id} is crashing for {duration}s BEFORE voting...")
+            time.sleep(duration)
+            print(f"  [CRASH SIM] Node {self.node_id} woke up, but Coordinator has likely timed out.")
+            # We don't return a vote here because we were "dead". 
+            # Or we return it late, but the Coord has already moved on.
+            return {"vote": "VOTE-ABORT"} 
 
-            # --- Failure Simulation Hook: Crash BEFORE voting ---
-            config = transaction_details.get('scenario_config', {})
+        # --- NORMAL LOGIC (1a, 1b) ---
+        self._load_balance_from_file() # Ensure balance is up-to-date
+
+        # 1. Validation for Isolation (Fixing the "Gap")
+        expected_balance = transaction_details.get('initial_A')
+        if transaction_type == 'T2' and self.node_id == 2 and expected_balance is not None:
+             if self.balance != expected_balance:
+                 print(f"  [PARTICIPANT {self.node_id}] Isolation Violation! Voting ABORT.")
+                 return {"vote": "VOTE-ABORT"}
+
+        # 2. Check Constraints
+        can_commit = False
+        if transaction_type == 'T1':
+            if self.node_id == 2: can_commit = (self.balance >= 100)
+            elif self.node_id == 3: can_commit = True
+        elif transaction_type == 'T2':
+            can_commit = True
+
+        if can_commit:
+            print(f"  [PARTICIPANT {self.node_id}] Constraints met. Voting VOTE-COMMIT.")
+            # Log "PREPARED" state (Required for 1c.ii Recovery)
+            self.current_tx = {'id': tx_id, 'state': 'PREPARED', 'type': transaction_type, 'details': transaction_details}
+            self._persist_tx_state()
+            print(f"  [PARTICIPANT {self.node_id}] Logged PREPARED state for TXN-{tx_id}.")
+
+            # --- LOGIC FOR 1c.ii (Crash AFTER voting) ---
+            # We set the trap here, but we DO NOT SLEEP yet. We return the vote first.
             if (config and config.get('crash_node') == self.node_id and
-                    config.get('crash_point') == 'BEFORE_VOTE'):
-                duration = config.get('crash_duration', 10)
-                print(f"  [CRASH SIM] Node {self.node_id} is crashing for {duration}s BEFORE voting...")
-                time.sleep(duration)
-                print(f"  [CRASH SIM] Node {self.node_id} has recovered, but the transaction has likely timed out and aborted.")
-                # The coordinator will have timed out and aborted by now.
+                    config.get('crash_point') == 'AFTER_VOTE'):
+                print(f"  [CRASH SIM] Node {self.node_id} will crash AFTER returning this vote.")
+                self.crash_pending = True
+                self.crash_duration = config.get('crash_duration', 10)
 
-            self._load_balance_from_file() # Ensure balance is up-to-date
-
-            can_commit = False
-            if transaction_type == 'T1':
-                if self.node_id == 2: # Account A
-                    can_commit = (self.balance >= 100)
-                elif self.node_id == 3: # Account B
-                    can_commit = True # No constraints on receiving money
-
-            elif transaction_type == 'T2':
-                # For T2, we use Optimistic Concurrency Control to ensure Isolation.
-                # Node 2 (Account A) must validate that its balance has not changed
-                # since the coordinator read it at the start of the transaction.
-                if self.node_id == 2:
-                    initial_A = transaction_details.get('initial_A')
-                    if self.balance == initial_A:
-                        can_commit = True
-                    else:
-                        print(f"  [PARTICIPANT {self.node_id}] OPTIMISTIC LOCK FAILED: Balance changed from {initial_A} to {self.balance}. Voting ABORT.")
-                else: # Node 3 has no constraints to validate for T2
-                    can_commit = True
-
-            if can_commit:
-                print(f"  [PARTICIPANT {self.node_id}] Constraints met. Voting VOTE-COMMIT.")
-                # Log "PREPARED" state to a persistent log for durability
-                self.current_tx = {'id': tx_id, 'state': 'PREPARED', 'type': transaction_type, 'details': transaction_details}
-                self._persist_tx_state()
-                print(f"  [PARTICIPANT {self.node_id}] Logged PREPARED state for TXN-{tx_id}.")
-
-                # --- Failure Simulation Hook: Crash AFTER voting ---
-                if (config and config.get('crash_node') == self.node_id and
-                        config.get('crash_point') == 'AFTER_VOTE'):
-                    duration = config.get('crash_duration', 10)
-                    print(f"  [CRASH SIM] Node {self.node_id} voted COMMIT. Crashing for {duration}s before getting final decision...")
-                    time.sleep(duration)
-                    print(f"  [CRASH SIM] Node {self.node_id} has recovered. Now entering recovery protocol...")
-                    self._recover_transaction()
-
-                return {"vote": "VOTE-COMMIT"}
-            else:
-                print(f"  [PARTICIPANT {self.node_id}] Constraints NOT met (Balance: {self.balance}). Voting VOTE-ABORT.")
-                self._clear_tx_state() # No need to be prepared if we are aborting
-                return {"vote": "VOTE-ABORT"}
+            return {"vote": "VOTE-COMMIT"}
+        else:
+            print(f"  [PARTICIPANT {self.node_id}] Constraints NOT met. Voting VOTE-ABORT.")
+            self._clear_tx_state()
+            return {"vote": "VOTE-ABORT"}
 
     def rpc_decision(self, tx_id, decision, transaction_details):
         """Participant receives the final decision from the coordinator."""
+        
+        # --- TRIGGER FOR 1c.ii (Crash AFTER voting) ---
+        # The Coordinator thinks we are alive, but we simulate a crash now.
+        if getattr(self, 'crash_pending', False):
+            print(f"  [CRASH SIM] Node {self.node_id} is crashing now! Ignoring decision: {decision}")
+            self.crash_pending = False # Reset flag
+            
+            # Sleep longer than the Coordinator's timeout (5s)
+            time.sleep(self.crash_duration)
+            
+            print(f"  [CRASH SIM] Node {self.node_id} recovered. Executing recovery protocol...")
+            self._recover_transaction() # Fetch the decision we missed
+            return {"status": "recovered"}
+
+        # --- NORMAL LOGIC (1a, 1b) ---
         with self.lock:
             print(f"  [PARTICIPANT {self.node_id}] Received final decision for TXN-{tx_id}: {decision}")
 
-            # This is a critical safety check. Only commit if:
-            # 1. The decision is GLOBAL-COMMIT.
-            # 2. This node is currently in a 'PREPARED' state for a transaction.
-            # 3. The transaction ID from the coordinator matches the one this node is prepared for.
             if decision == "GLOBAL-COMMIT" and self.current_tx and self.current_tx['id'] == tx_id:
                 print(f"  [PARTICIPANT {self.node_id}] Committing transaction.")
-                # Apply the transaction changes to the account balance
+                
+                # Calculate the change in balance based on the transaction type
+                balance_change = 0
                 if self.current_tx['type'] == 'T1':
-                    if self.node_id == 2: self.balance -= 100
-                    if self.node_id == 3: self.balance += 100
-                    print(f"  [PARTICIPANT {self.node_id}] Applied T1. New Balance: {self.balance}")
+                    balance_change = -100 if self.node_id == 2 else 100
                 elif self.current_tx['type'] == 'T2':
-                    bonus = 0.2 * transaction_details['initial_A']
-                    self.balance += bonus
-                    print(f"  [PARTICIPANT {self.node_id}] Applied T2 (Bonus {bonus}). New Balance: {self.balance}")
-                # Persist the new balance to the file and clean up state
+                    balance_change = 0.2 * transaction_details['initial_A']
+                
+                # Apply the change and log it
+                self.balance += balance_change
+                print(f"  [PARTICIPANT {self.node_id}] Applied {self.current_tx['type']}. New Balance: {self.balance}")
+                    
+                # Persist
                 self._persist_balance()
                 self._clear_tx_state()
             else: # GLOBAL-ABORT or inconsistent state
