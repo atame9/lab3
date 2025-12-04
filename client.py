@@ -189,6 +189,12 @@ def scenario_1c_ii():
     config = {'crash_node': 2, 'crash_point': 'AFTER_VOTE', 'crash_duration': 10}
     _trigger_transaction('T1', scenario_config=config)
 
+    # Wait long enough for the node to crash (10s) and then recover.
+    print("\nClient is waiting for Node 2 to recover and complete the transaction...")
+    time.sleep(12)
+    print("Expected final state: A=100, B=400 (Committed after recovery)")
+    _show_cluster_state()
+
 # ============================================================================
 # Command-Line Interface
 # ============================================================================
